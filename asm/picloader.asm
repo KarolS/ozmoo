@@ -329,10 +329,7 @@ interrupt_vector = $314
 	
 .filename
 !source "file_name.asm"
-<<<<<<< HEAD
-=======
 filename_length = * - .filename
->>>>>>> upstream/master
 }
 .end_of_loader
 
