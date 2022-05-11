@@ -527,7 +527,6 @@ translate_petscii_to_zscii
 	bcc .no_match
 	beq .translation_match
 	dex
-	dex
 	bpl -
 .no_match	
 	; cmp #$60
@@ -553,8 +552,7 @@ translate_petscii_to_zscii
 .case_conversion_done
 	rts
 .translation_match
-	dex
-	lda character_translation_table_in,x
+	lda character_translation_table_in_end,x
 	rts
 
 	
@@ -966,11 +964,7 @@ find_word_in_dictionary
 	ldy #0
 .unordered_loop_check_entry
 	jsr read_next_byte
-!ifdef Z4PLUS {
-	cmp zword,y
-} else {
-	cmp zword + 2,y
-}
+	cmp zword,y ; Correct for z4+, and this code is only built for z5+
 	bne .unordered_not_a_match
 	iny
 	cpy #ZCHAR_BYTES_PER_ENTRY
@@ -1404,7 +1398,9 @@ read_text
 
 	ldy #0
 -   cmp terminating_characters,y
-	beq .read_text_done
+	bne .cont_check
+	jmp .read_text_done
+.cont_check
 	iny
 	cpy num_terminating_characters
 	bne -
@@ -1420,7 +1416,7 @@ read_text
 !ifdef USE_HISTORY {
 	bne ++
 	; all input deleted, so enable history again
-	jsr enable_history_keys
+;	jsr enable_history_keys
 ++
 }
 	jsr turn_off_cursor
@@ -1473,7 +1469,7 @@ read_text
 }
 	lda .petscii_char_read
 !ifdef USE_HISTORY {
-	jsr disable_history_keys
+;	jsr disable_history_keys
 }
 	jsr s_printchar
 ;!ifdef USE_BLINKING_CURSOR {
@@ -1481,6 +1477,20 @@ read_text
 ;}
 	jsr update_cursor
 	pla
+!ifdef character_downcase_table {	
+	bpl +
+	ldx #character_downcase_table_end - character_downcase_table - 1
+-	cmp character_downcase_table,x
+	bcc +
+	beq .match_in_downcase_table
+	dex
+	bpl -
+	bmi + ; Alwats branch
+.match_in_downcase_table
+	lda character_downcase_table_end,x
+	bne .dont_invert_case ; Always branch
++
+}
 	; convert to lower case
 	cmp #$41
 	bcc .dont_invert_case
@@ -1670,12 +1680,11 @@ disable_history_keys
 	lda #1
 	bne + ; unconditional jump for code sharing with enable_history_keys
 enable_history_keys
-	; enable cursor up/down for history
+	; enable cursor up/down for history if there is any history stored
 	; input: -
 	; output: -
 	; side effects: -
 	; used registers: -
-	; only enable if we have any history stored
 	pha
 	lda .history_first
 	cmp .history_last
@@ -1718,12 +1727,12 @@ add_line_to_history
 	cpx #history_size 
 	bcc +
 	ldx #0
-+   ; check if we are overwriting the oldest entry
-    cpx .history_first
-    bne +
-    ; drop the oldest entry
-    txa
-    pha
++	; check if we are overwriting the oldest entry
+	cpx .history_first
+	bne +
+	; drop the oldest entry
+	txa
+	pha
 --	lda history_start,x
 	pha
 	lda #0 ; null the oldest entry as we skip forwards
@@ -1743,7 +1752,10 @@ add_line_to_history
 	stx .history_last
 	lda #0
 	dex
-	sta history_start,x
+	cpx #$ff
+	bne +
+	ldx #history_lastpos
++	sta history_start,x
 	pla
 ++  ; done
 !ifdef TRACE_HISTORY {

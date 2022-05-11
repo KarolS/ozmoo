@@ -17,9 +17,10 @@
 !ifdef TARGET_MEGA65 {
 	TARGET_ASSIGNED = 1
 	HAS_SID = 1
-	SUPPORT_REU = 0
+	SUPPORT_REU = 1
 	SUPPORT_80COL = 1;
 	!ifdef SLOW {
+		; This is never used, since VMEM is always enabled for this target
 		!ifndef VMEM {
 			SKIP_BUFFER = 1
 		}
@@ -861,7 +862,7 @@ game_id		!byte 0,0,0,0
 ; include other assembly files
 !source "utilities.asm"
 !source "screenkernal.asm"
-!source "streams.asm"
+!source "streams.asm" ; Must come before "text.asm"
 !source "disk.asm"
 !ifdef VMEM {
 	!if SUPPORT_REU = 1 {
@@ -1122,7 +1123,7 @@ deletable_screen_init_1
 		lda #54
 		sta sl_score_pos
 		lda #67
-		sta sl_turns_pos
+		sta sl_moves_pos
 		lda #64
 		sta sl_time_pos
 .width40
@@ -1209,7 +1210,7 @@ z_init
 	lda #TERPNO ; Interpreter number (8 = C64)
 	ldy #header_interpreter_number 
 	jsr write_header_byte
-	lda #70 ; "F" = release 6
+	lda #71 ; "G" = release 7
 	ldy #header_interpreter_version  ; Interpreter version. Usually ASCII code for a capital letter
 	jsr write_header_byte
 	lda #25
@@ -1475,7 +1476,7 @@ deletable_init
 	ldx #1
 	ldy boot_device
 	jsr read_track_sector
-;    jsr kernal_readchar   ; read keyboard
+	
 ; Copy game id
 	ldx #3
 -	lda config_load_address,x
@@ -1826,16 +1827,26 @@ reu_start
 	lda #0
 	sta use_reu
 	sta keyboard_buff_len
+!ifndef TARGET_MEGA65 {
 	ldx reu_c64base
 	inc reu_c64base
 	inx
 	cpx reu_c64base
 	bne .no_reu_present
+}
 ; REU detected, check size
-;	jsr check_reu_size
+	jsr check_reu_size
+	sta reu_banks
+	cmp #8
+	bcc .no_reu_present ; If REU size < 512 KB, don't use it.
 ;	sta $0700
-	
 
+!ifdef TARGET_MEGA65 {
+	ldx #$80 ; Use REU, set vmem to reu loading mode
+	stx use_reu
+.no_reu_present	
+	rts
+} else {
 	lda #>.use_reu_question
 	ldx #<.use_reu_question
 	jsr printstring_raw
@@ -1865,12 +1876,12 @@ reu_start
 	jmp s_printchar
 .no_reu_present	
 	rts
-	
+
 .use_reu_question
 	!pet 13,"Use REU? (Y/N) ",0
-} ; SUPPORT_REU = 1
 
-!if SUPPORT_REU = 1 {
+} ; End of TARGET not MEGA65
+
 ; progress_reu = parse_array
 ; reu_progress_ticks = parse_array + 1
 ; reu_last_disk_end_block = string_array ; 2 bytes
