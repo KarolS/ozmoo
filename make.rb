@@ -13,8 +13,12 @@ if $is_windows then
     $XPLUS4 = "C:\\ProgramsWoInstall\\WinVICE-3.1-x64\\xplus4 -autostart-delay-random"
     $C1541 = "C:\\ProgramsWoInstall\\WinVICE-3.1-x64\\c1541.exe"
     $EXOMIZER = "C:\\ProgramsWoInstall\\Exomizer-3.1.0\\win32\\exomizer.exe"
+<<<<<<< HEAD
     $ACME = "C:\\ProgramsWoInstall\\acme0.96.4win\\acme\\acme.exe"
     $TXD = "C:\\ProgramsWoInstall\\ztools\\txd.exe"
+=======
+    $ACME = "C:\\ProgramsWoInstall\\acme0.97win\\acme\\acme.exe"
+>>>>>>> da21c50299c8c0892bacef6777200451749a2be4
 	$commandline_quotemark = "\""
 else
 	# Paths on Linux
@@ -1081,15 +1085,14 @@ end
 def add_boot_file(finaldiskname, diskimage_filename)
 	if $target == "mega65" then	
 	        # Put C65/C64 mode switch wrapper on the front
-        	cmd = "cat #{$wrapper_file} #{$good_zip_file} > #{$universal_file}";
-	        puts cmd if $verbose
-	        ret = system(cmd)
-	        exit 0 unless ret
+			base = IO.binread($wrapper_file)
+			to_append = IO.binread($good_zip_file)
+			IO.binwrite($universal_file, base + to_append);
 	end
-	ret = FileUtils.cp("#{diskimage_filename}", "#{finaldiskname}")
+	ret = FileUtils.cp(diskimage_filename, finaldiskname)
 
 	opt = ""
-	opt = "-silent " unless $verbose
+#	opt = "-silent " unless $verbose # Doesn't work on older Vice versions
 	
 	c1541_cmd = "#{$C1541} #{opt}-attach \"#{finaldiskname}\" -write \"#{$good_zip_file}\" #{$file_name}"
 	if $target == "mega65" then	
@@ -1106,7 +1109,12 @@ end
 
 def play(filename)
 	if $target == "mega65" then
-	    command = "#{$MEGA65} -8 #{filename}"
+		if defined? $MEGA65 then
+			command = "#{$MEGA65} -8 #{filename}"
+		else
+			puts "Location of MEGA65 emulator unknown. Please set $MEGA65 at start of make.rb"
+			exit 0
+		end
 	elsif $target == "plus4" then
 	    command = "#{$XPLUS4} #{filename}"
 	elsif $target == "c128" then
@@ -1741,8 +1749,8 @@ def print_usage_and_exit
 	puts "         [-dmdc:[n]:[n]] [-dmbc:[n]] [-dmsc:[n]] [-dmic:[n]] [-ss[1-4]:\"text\"]"
 	puts "         [-sw:[nnn]] [-cb:[n]] [-cc:[n]] [-dmcc:[n]] [-cs:[b|u|l]] "
 	puts "         <storyfile>"
-	puts "  -t: specify target machine. Available targets are c64 (default), c128 and plus4."
-	puts "  -S1|-S2|-D2|-D3|-71|-81|-P: specify build mode. Defaults to S1 (71 for C128). See docs."
+	puts "  -t: specify target machine. Available targets are c64 (default), c128, plus4 and mega65."
+	puts "  -S1|-S2|-D2|-D3|-71|-81|-P: build mode. Defaults to S1 (71 for C128, 81 for MEGA65). See docs."
 	puts "  -v: Verbose mode. Print as much details as possible about what make.rb is doing."
 	puts "  -p: preload a a maximum of n virtual memory blocks to make game faster at start."
 	puts "  -b: only preload virtual memory blocks that can be included in the boot file."
@@ -1848,21 +1856,14 @@ begin
 		elsif ARGV[i] =~ /^-t:(c64|c128|mega65|plus4)$/ then
 			$target = $1
 			if $target == "mega65" then
-			    # d81 as default for Mega65 and different start address
 			    $start_address = 0x1001
-			    mode = MODE_81
-			    # this will not work since mode is default MODE_S1 above
-			    #mode = MODE_81 unless mode 
 			elsif $target == "plus4" then
-			    # Different start address
 			    $start_address = 0x1001
 				$memory_end_address = 0xfc00
 				$unbanked_ram_end_address = $memory_end_address
 				$normal_ram_end_address = $memory_end_address
 			elsif $target == "c128" then
-			    # Different start address
 			    $start_address = 0x1200
-#			    $start_address = 0x1c00
 				$memory_end_address = 0xfc00
 				$unbanked_ram_end_address = 0xc000
 				$normal_ram_end_address = $memory_end_address
@@ -1965,6 +1966,8 @@ print_usage_and_exit() if await_preloadfile or await_fontfile or await_imagefile
 unless mode
 	if $target == 'c128'
 		mode = MODE_71
+	elsif $target == 'mega65'
+		mode = MODE_81
 	else 
 		mode = MODE_S1
 	end
@@ -1983,6 +1986,11 @@ if mode == MODE_P
 		end
 	end
 end	
+
+if mode != MODE_81 and $target == 'mega65'
+	puts "ERROR: Only build mode 81 is supported on this target platform."
+	exit 1
+end
 
 if mode == MODE_71 and $target != 'c128'
 	puts "ERROR: Build mode 71 is not supported on this target platform."
@@ -2014,7 +2022,7 @@ if $font_filename
 		$start_address = 0x2000
 	elsif $target == 'mega65'
 		# It is not possible to disable shadow character roms on
-		# the C64 and the Mega65, so we cannot use $1000-$2000
+		# the C64 and the MEGA65, so we cannot use $1000-$2000
 		# for custom fonts. Instead we put the font in $0800, but
 		# we also need to move the scren to $1000, since it will no
 		# longer fit at $0400 because it is now 80 characters wide
@@ -2283,7 +2291,7 @@ end
 splash = File.read(File.join($SRCDIR, 'splashlines.tpl'))
 version = File.read(File.join(__dir__, 'version.txt'))
 version.gsub!(/[^\d\.]/m,'')
-splash.sub!("@vs@", version)
+splash.gsub!("@vs@", version)
 splash.sub!(/"(.*)\(F1 = darkmode\)/,'"          \1') if $no_darkmode
 4.times do |i|
 	text = splashes[i]
