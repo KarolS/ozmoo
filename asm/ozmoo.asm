@@ -1,9 +1,12 @@
 ; Which Z-machine to generate binary for
 ; (usually defined on the acme command line instead)
-; Z1, Z2, Z6 and Z7 will (probably) never be supported
+; Z6 will never be supported
+;Z1 = 1
+;Z2 = 1
 ;Z3 = 1
 ;Z4 = 1
 ;Z5 = 1
+;Z7 = 1
 ;Z8 = 1
 
 ; Which machine to generate code for
@@ -120,12 +123,14 @@
 	Z3PLUS = 1
 	Z4PLUS = 1
 	Z5PLUS = 1
+	Z7PLUS = 1
 }
 !ifdef Z8 {
 	ZMACHINEVERSION = 8
 	Z3PLUS = 1
 	Z4PLUS = 1
 	Z5PLUS = 1
+	Z7PLUS = 1
 }
 
 !ifdef TRACE {
@@ -1583,7 +1588,6 @@ deletable_init
 
 ; parse_header section
 
-
 	; Store the size of dynmem AND (if VMEM is enabled)
 	; check how many z-machine memory blocks (256 bytes each) are not stored in raw disk sectors
 !ifdef TARGET_C128 {
@@ -1648,7 +1652,7 @@ deletable_init
 
 } ; End of !ifdef VMEM
 
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 	; check z machine version
 	ldy #header_version
 	jsr read_header_word
@@ -1730,9 +1734,6 @@ insert_disks_at_boot
 	sta reu_last_disk_end_block + 1
 }
 
-;	jsr dollar
-;	jsr kernal_readchar
-	jsr prepare_for_disk_msgs
 	lda #0
 	tay ; Disk#
 .next_disk
@@ -1843,8 +1844,6 @@ copy_data_from_disk_at_zp_temp_to_reu
 	jsr copy_page_to_reu
 	bcs .reu_error
 
-	ldx z_temp ; (Not) Already loaded
-
 	; Inc Z-machine page
 	inc z_temp
 	bne +
@@ -1859,7 +1858,7 @@ copy_data_from_disk_at_zp_temp_to_reu
 +	inc z_temp + 6
 	bne .initial_copy_loop
 	inc z_temp + 7
-+	bne .initial_copy_loop ; Always branch
+	bne .initial_copy_loop ; Always branch
 
 .done_copying
 
@@ -1946,7 +1945,7 @@ reu_progress_base
 !ifndef Z4PLUS {
 	!byte 16 ; blocks read to REU per tick of progress bar
 } else {
-!ifdef Z8 {
+!ifdef Z7PLUS {
 	!byte 64 ; blocks read to REU per tick of progress bar
 } else {
 	!byte 32 ; blocks read to REU per tick of progress bar
@@ -1962,7 +1961,7 @@ print_reu_progress_bar
 	lda z_temp + 5
 	sbc reu_last_disk_end_block + 1
 !ifdef Z4PLUS {
-!ifdef Z8 {
+!ifdef Z7PLUS {
 	ldx #6
 } else {
 	ldx #5

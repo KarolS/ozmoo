@@ -591,39 +591,34 @@ convert_char_to_zchar
 	inx
 	bne .store_last_char ; Always branch
 	
-	; tax
-; !ifdef DEBUG {
-	; jsr printx
-; }
-	; lda #ERROR_INVALID_CHAR
-	; jsr fatalerror
 .found_char_in_alphabet
 	cpy #26
 	bcc .found_in_a0
+!ifndef Z3PLUS {
+	lda #2 ; Shift up to A1
+} else {
 	lda #4 ; Shift to A1
+}
 	cpy #26*2
 	bcc .found_in_a1
+!ifndef Z3PLUS {
+	lda #3 ; Shift down to A2
+} else {
 	lda #5 ; Shift to A2
+}
 .found_in_a1
-;	stx zp_temp + 3
-;	ldx zp_temp + 4
 	sta z_temp,x
 	inx
-	sty zp_temp + 2 ; Remember old Y value
-	tay ; Holds 4 for A1 or 5 for A2
-	lda zp_temp + 2
--	sec
-	sbc #26
-	dey
-	cpy #4
+	tya
+	sec
+-	sbc #26
+	cmp #26
 	bcs -
-;	ldy zp_temp + 2 ; Restore old Y value
 	tay
 .found_in_a0
 	tya
 	clc
 	adc #6
-;	ldx zp_temp + 4
 .store_last_char	
 	sta z_temp,x
 	inx
@@ -793,18 +788,15 @@ find_word_in_dictionary
 	clc
 	adc .first_word
 	sta .median_word
-	sta multiplicand
+	sta multiplier
 	tya
 	adc .first_word + 1
 	sta .median_word + 1
-	sta multiplicand + 1
+	sta multiplier + 1
 	
 	; Step 3: Set the address of the median word
 	lda dict_len_entries
-	sta multiplier
-	lda #0
-	sta multiplier + 1
-	jsr mult16
+	jsr mult8
 	lda product
 	clc
 	adc dict_entries
@@ -995,9 +987,6 @@ find_word_in_dictionary
 } ; End of !ifdef Z5PLUS
 
 !ifdef USE_BLINKING_CURSOR {
-init_cursor_timer
-	lda #0
-	sta s_cursormode
 update_cursor_timer
 	; calculate when the next cursor update occurs
 	jsr kernal_readtime  ; read current time (in jiffys)
@@ -1231,6 +1220,7 @@ update_cursor
 	rts
 
 !ifdef USE_BLINKING_CURSOR {
+init_cursor_timer
 reset_cursor_blink
 	; resets the cursor timer and blink mode
 	; effectively puts the cursor back on the screen for another timer duration
@@ -2016,6 +2006,7 @@ print_addr
 	jsr init_get_zchar
 .print_chars_loop
 	jsr get_next_zchar
+!ifndef Z1 {
 	ldy abbreviation_command
 	beq .l0
 	; handle abbreviation
@@ -2093,6 +2084,7 @@ print_addr
 	lda #0
 	sta alphabet_offset
 	jmp .next_zchar
+} ; End of abbreviation call, for Z2+
 .l0 ldy escape_char_counter
 	beq .l0a
 	; handle the two characters that make up an escaped character
@@ -2116,10 +2108,12 @@ print_addr
 	bne .not_A2
 ; newline?
 	cmp #7
-;	bne .l0b
-;	lda #13
-;	jmp .print_normal_char ; Always jump
+!ifndef Z1 {
+	bne .l0b
+	lda #13
+	jmp .print_normal_char ; Always jump
 .l0b 
+}
 	; Direct jump for all normal chars in A2
 	bcs .l6
 	; escape char?
@@ -2129,7 +2123,7 @@ print_addr
 	sta escape_char_counter
 	lda #0
 	sta escape_char
-	beq .sta_offset
+	beq .reset_alphabet ; Always branch
 .not_A2
 	cmp #6
 	bcs .l6
@@ -2149,13 +2143,13 @@ print_addr
 +
 }
 !ifdef Z2 {
-	cmp #2
-	bcc .abbreviation
+	cmp #1
+	beq .abbreviation
 }
 !ifndef Z3PLUS {
 	; Handle shift codes for z1 & z2
-	cmp #6
-	bcs .l6 ; Regular char
+;	cmp #6
+;	bcs .l6 ; Regular char
 	cmp #2
 	bne .z1shift3
 	; Code 2, shift up temporarily
@@ -2163,10 +2157,9 @@ print_addr
 	clc
 	adc #26
 	cmp #53
-	bcc +
+	bcc .sta_alpha_and_jump
 	lda #0
-+	sta alphabet_offset
-	jmp .next_zchar
+	beq .sta_alpha_and_jump ; Always branch
 .z1shift3
 	cmp #3
 	bne .z1shift4
@@ -2174,9 +2167,10 @@ print_addr
 	lda perm_alphabet_offset
 	sec
 	sbc #26
-	bpl +
+	bpl .sta_alpha_and_jump
 	lda #52
-+	sta alphabet_offset
+.sta_alpha_and_jump
+	sta alphabet_offset
 	jmp .next_zchar
 .z1shift4
 	cmp #4
@@ -2186,21 +2180,20 @@ print_addr
 	clc
 	adc #26
 	cmp #53
-	bcc +
+	bcc .sta_perm_alpha_and_jump ; Always branch
 	lda #0
-+	sta alphabet_offset
+.sta_perm_alpha_and_jump
 	sta perm_alphabet_offset
+	sta alphabet_offset
 	jmp .next_zchar
 .z1shift5
 	; Code 5, shift down permanently
 	lda perm_alphabet_offset
 	sec
 	sbc #26
-	bpl +
+	bpl .sta_perm_alpha_and_jump
 	lda #52
-+	sta alphabet_offset
-	sta perm_alphabet_offset
-	jmp .next_zchar
+	bne .sta_perm_alpha_and_jump ; Always branch
 }
 !ifdef Z3PLUS {	
 	cmp #4
@@ -2228,6 +2221,7 @@ print_addr
 	jsr convert_zchar_to_char
 .print_normal_char
 	jsr streams_print_output
+.reset_alphabet
 !ifndef Z3PLUS {
 	; Change back to permanent alphabet
 	lda perm_alphabet_offset
@@ -2235,7 +2229,6 @@ print_addr
 	; change back to A0
 	lda #0
 }
-.sta_offset
 	sta alphabet_offset
 .next_zchar
 	jsr was_last_zchar

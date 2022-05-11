@@ -28,7 +28,7 @@ disk_info
 !ifdef Z5 {
 	!fill 94
 }
-!ifdef Z8 {
+!ifdef Z7PLUS {
 	!fill 120
 }
 
@@ -158,7 +158,7 @@ readblock
 	inc .track
 	dec .disk_tracks
 	bne .check_track
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 ; Broken config
 	lda #ERROR_CONFIG ; Config info must be incorrect if we get here
 	jmp fatalerror
@@ -166,14 +166,14 @@ readblock
 .next_disk
 	ldx .next_disk_index
 	iny
-!ifdef UNSAFE {
-	jmp .check_next_disk
-} else {
+!ifdef CHECK_ERRORS {
 	cpy disk_info + 2 ; # of disks
 	bcs +
 	jmp .check_next_disk
 +	lda #ERROR_OUT_OF_MEMORY ; Meaning request for Z-machine memory > EOF. Bad message? 
 	jmp fatalerror
+} else {
+	jmp .check_next_disk
 }
 
 .right_track_found
@@ -488,6 +488,7 @@ m65_read_track
 	dey ; Set y to 1
 	sty dma_dest_bank_and_flags
 	dey ; Set y to 0
+	sty dma_count ; Transfer 2 pages (lowbyte = 0)
 	sty dma_source_address
 	sty dma_dest_address
 	sty dma_dest_address_top
@@ -779,9 +780,6 @@ close_io
 	jmp kernal_clrchn ; call CLRCHN
 
 !zone disk_messages {
-prepare_for_disk_msgs
-	rts
-
 print_insert_disk_msg
 ; Parameters: y: memory index to start of info for disk in disk_info
 	sty .save_y
@@ -1432,7 +1430,6 @@ vdc_insertion_sort
 	lda current_disks - 8,x
 	sta .last_disk
 	beq .dont_print_insert_save_disk ; Save disk is already in drive.
-	jsr prepare_for_disk_msgs
 	ldy #0
 	jsr print_insert_disk_msg
 	ldx disk_info + 4 ; Device# for save disk

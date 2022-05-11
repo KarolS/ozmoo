@@ -351,9 +351,8 @@ dumptovice
 	sta z_temp + 3 ; Temporary storage while we jsr
 	jsr read_operand
 	lda z_temp + 3
-	ldx z_operand_count
-	cpx z_temp
-	bcc .get_next_op_type
+	dec z_temp
+	bne .get_next_op_type
 
 .done
 
@@ -362,7 +361,7 @@ dumptovice
 	beq .perform_instruction
 	inc z_temp + 5
 	lda z_temp + 4
-	ldy #8
+	ldy #4
 	sty z_temp
 	bne .get_next_op_type ; Always branch
 }
@@ -376,7 +375,7 @@ dumptovice
 	sta z_trace_page,y
 	inc z_trace_index
 }
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 	cmp #z_number_of_opcodes_implemented
 	bcs z_not_implemented
 }
@@ -393,9 +392,7 @@ jmp_main_loop
 
 z_not_implemented
 
-!ifdef UNSAFE {
-	rts
-} else {
+!ifdef CHECK_ERRORS {
 !ifdef DEBUG {
 	jsr print_following_string
 	!pet "opcode: ",0
@@ -410,6 +407,8 @@ z_not_implemented
 }
 	lda #ERROR_OPCODE_NOT_IMPLEMENTED
 	jsr fatalerror
+} else {
+	rts
 }
 }
 
@@ -445,7 +444,7 @@ read_operand
 	cmp #16
 	bcs .read_global_var
 	; Local variable
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 	tay
 	dey
 	cpy z_local_var_count
@@ -532,7 +531,7 @@ read_operand
 	bcs .store_operand ; Always branch
 } ; end not COMPLEX_MEMORY
 
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 .nonexistent_local
 	lda #ERROR_USED_NONEXISTENT_LOCAL_VAR
 	jsr fatalerror
@@ -597,7 +596,7 @@ z_get_variable_reference_and_value
 	stx zp_temp + 2
 }
 	dey
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 	cpy z_local_var_count
 	bcs .nonexistent_local
 }
@@ -657,13 +656,24 @@ z_get_referenced_value
 	sta zp_temp + 1
 	jmp z_get_referenced_value
 
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 .nonexistent_local
 	lda #ERROR_USED_NONEXISTENT_LOCAL_VAR
 	jsr fatalerror
 }
-	
-; z_get_variable_value
+
+!ifndef Z4PLUS {
+	GET_LOW_GLOBAL_NEEDED = 1
+} else {
+	!ifndef COMPLEX_MEMORY {
+		!ifdef SLOW {
+			GET_LOW_GLOBAL_NEEDED = 1
+		}
+	}
+}
+
+
+!ifdef GET_LOW_GLOBAL_NEEDED {
 z_get_low_global_variable_value
 	; Read global var 0-111
 	; input: a = variable# + 16 (16-127)
@@ -672,16 +682,6 @@ z_get_low_global_variable_value
 !ifdef TARGET_C128 {
 	lda #z_low_global_vars_ptr
 	jmp read_word_from_bank_1_c128
-	; sta $02aa
-	; ldx #$7f
-	; jsr $02a2
-	; pha
-	; iny
-	; ldx #$7f
-	; jsr $02a2
-	; tax
-	; pla
-	; rts
 } else {
 	; Not TARGET_C128
 	iny
@@ -697,7 +697,7 @@ z_get_low_global_variable_value
 	+after_dynmem_read
 	rts ; Note that caller may assume that carry is clear on return!
 } ; End else - Not TARGET_C128
-
+} ; End ifdef GET_LOW_GLOBAL_NEEDED
 
 ; Used by z_set_variable
 .write_to_stack
@@ -723,7 +723,7 @@ z_set_variable
 	; Local variable
 	tay
 	dey
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 	cpy z_local_var_count
 	bcs .nonexistent_local
 }
@@ -771,7 +771,7 @@ z_ins_not_supported
 z_divide
 	; input: Dividend in arg 0, divisor in arg 1, y = signed? 0 = unsigned, $ff = signed
 	; output: result in division_result (low byte, high byte)
-!ifndef UNSAFE {
+!ifdef CHECK_ERRORS {
 	lda z_operand_value_high_arr + 1
 	ora z_operand_value_low_arr + 1
 	bne .not_div_by_0
@@ -1258,9 +1258,7 @@ z_ins_loadw_and_storew
 	lda z_operand_value_high_arr + 2
 	jsr write_next_byte
 	lda z_operand_value_low_arr + 2
-	jsr write_next_byte
-z_ins_nop
-	rts
+	jmp write_next_byte
 	
 z_ins_loadb
 	jsr calc_address_in_byte_array
@@ -1495,6 +1493,7 @@ print_num_unsigned
 !ifdef Z5PLUS {
 z_ins_set_true_colour
 }
+z_ins_nop
 	rts
 
 !ifdef REMOVE_RANDOM {
