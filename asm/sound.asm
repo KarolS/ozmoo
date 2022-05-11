@@ -1,39 +1,40 @@
 ; Sound support (currently only for MEGA65)
 ;
 ; Ozmoo can read and play sound effects (samples) from
-; aiff files. The aiff files can be extracted from
+; wav or aiff files. Aiff files can be extracted from
 ; blorb files using the rezrov utility:
 ; http://www.ifarchive.org/if-archive/programming/blorb/rezrov.c
 ; or converted from other sample formats using a tool like
 ; sndfile-convert
 ;
-; Currently we only support AIFF with 8 bits, one channel.
-;
-; Blorp files are the standard asset format for Inform games,
+; Blorb files are the standard asset format for Inform games,
 ; and Infocom assets from Sherlock, The Luring Horror and Shogun
-; have been converted to blorp.
+; have been converted to blorb.
 ; Specification: https://www.eblong.com/zarf/blorb/
 ;
-; AIFF is a standard format for various media, including samples:
-; https://www.instructables.com/How-to-Read-aiff-Files-using-C/
-; use mediainfo or exiftool to check the AIFF metadata
+; Currently we only support sample files with 8 bits, one channel.
 ;
 ; TODO:
-; - add second channel for stereo
-; - support all options for @sound_effect
-; - sample rate correct, but conversion to d724-726 a bit off (see 007.aiff)
-; - perhaps change preload of all sounds to load on demand
+; - perhaps change preload of all sounds to load on demand for faster init
 
 !ifdef SOUND {
 !zone sound_support {
 !ifdef TARGET_MEGA65 {
 
 ;TRACE_SOUND = 1
+;SOUND_AIFF_ENABLED = 1
+SOUND_WAV_ENABLED = 1
 
 sound_load_msg !pet "Loading sound: ",0
 sound_load_msg_2 !pet 13,"Done.",0
 sound_file_name 
-	!pet "000.aiff"
+	!pet "000."
+!ifdef SOUND_AIFF_ENABLED {
+	!pet "aiff"
+}
+!ifdef SOUND_WAV_ENABLED {
+	!pet "wav"
+}
 	!byte $a0,$a0,$a0,$a0,$a0,$a0,$a0,$a0
 sound_nums !byte 100,10,1
 sound_data_base = z_temp + 3
@@ -47,7 +48,6 @@ sound_index_ptr = z_operand_value_low_arr ; 4 bytes
 ; sound_index = z_operand_value_low_arr + 4 ; 1 byte
 
 top_soundfx_plus_1 !byte 0
-
 
 read_sound_file
 	; a: Sound file number (3-255)
@@ -216,13 +216,13 @@ read_all_sound_files
 	jsr printstring_raw
 
 ; Init target address ($08080000) and index address ($0807FC00)
-	lda #8
-	tay
-	taz
-	lda #0
+; Init target address ($08100000) and index address ($0807FC00)
+	ldz #$08
+	ldy #$10
+	lda #$00
 	tax
 	stq sound_file_target
-	dey
+	ldy #$07
 	ldx #$fc
 	stq sound_index_ptr
 
@@ -245,15 +245,87 @@ read_all_sound_files
 	jsr erase_window
 	lda #3
 	cmp top_soundfx_plus_1 ; Set carry if no sound files could be loaded
-.return
 	rts
 
-init_sound = read_all_sound_files
+init_sound
+    ; set up an interrupt to monitor playback
+    sei
+    lda #<.sound_callback
+    ldx #>.sound_callback
+    sta $0314
+    stx $0315
+    lda $d011
+    and #$7f ; high raster bit = 0
+    sta $d011
+    lda #251 ; low raster bit (1 raster beyond visible screen)
+    sta $d012
+    cli
+    jmp read_all_sound_files
 
+.sound_is_playing !byte 0
+
+.sound_callback
+    lda .sound_is_playing
+    beq .sound_callback_done
+    ; We issued a sound request. Is it still running?
+    lda $d720
+    and #$08
+    beq .sound_callback_done
+    ; the sound has stopped
+    lda #0
+    sta .sound_is_playing
+!ifdef Z5PLUS {
+    ; are we looping?
+    lda sound_arg_repeats
+	
+    cmp #$ff
+    beq .sound_callback_restart_sample
+    dec sound_arg_repeats
+    beq .sound_finished
+.sound_callback_restart_sample
+    ; loop!
+    jsr .play_sample
+    jmp .sound_callback_done
+}
+.sound_finished
+!ifdef Z5PLUS {
+    ; trigger the routine callback, if any
+    lda sound_arg_routine
+    bne +
+    lda sound_arg_routine + 1
+    beq ++  ; routine = 0
++   ; routine isn't 0, trigger the callback
+    lda #1
+    sta trigger_sound_routine
+++
+}
+.sound_callback_done
+    ; finish interrupt handling
+    asl $d019 ; acknowlege irq
+    jmp $ea31  ; finish irq
+
+
+; This is set by z_ins_sound_effect
 sound_arg_effect !byte 0
 sound_arg_volume !byte 0
 sound_arg_repeats !byte 0
 sound_arg_routine !byte 0, 0
+
+sound_tmp !byte 0,0
+
+; signal for the z-machine to run the routine argument
+trigger_sound_routine !byte 0
+
+; This is set by sound-aiff or sound-wav
+sample_rate_hz !byte 0,0 
+sample_is_signed !byte 0 ; 0 if sample data is unsigned, $ff if signed
+sample_start_address !byte 0,0,0,0 ; 32 bit pointer
+sample_stop_address !byte 0,0,0,0 ; 32 bit pointer
+
+.current_effect !byte $ff
+.bad_audio_format_msg !pet "[unsupported audio format]", 13, 0
+.sample_clock_dummy !byte 0 ; A dummy byte just before sample_clock, needed for the calculations for conversion from sample rate
+.sample_clock !byte 0,0,0
 
 sound_effect
     ; currently we ignore 1 prepare and 4 finish with
@@ -262,12 +334,9 @@ sound_effect
     beq .play_sound_effect
     cmp #3 ; stop
     beq .stop_sound_effect
+.return
     rts
     
-.stop_sound_effect
-    ; TODO
-    rts
-
 .play_sound_effect
     ; input: x = sound effect (3, 4 ...)
     ; convert to zero indexed
@@ -290,203 +359,177 @@ sound_effect
     ; load sound effect into fastRAM at $40000
     stx .current_effect ; store as zero indexed index instead
     jsr .copy_effect_to_fastram
-+   ; play sound effect
-    jmp .play_aiff
-
-.exponent !byte 0,0
-.sample_rate_big_endian !byte 0, 0, 0 ; two first bytes are value in Hz
-.bad_audio_format_msg !pet "[bad audio format]", 13, 0
-.current_effect !byte $ff
-
-.play_aiff
-    ; plays AIFF at $4000
-    ;
-    ; simplifying assumptions:
-    ; - only one SSND chunk
-    ; - no comments in the SSND chunk
-    ; - max size of each chunk other chunk is 256 bytes
-
-    ; parse the AIFF header
-    jsr .init_fastRAM_base
-    ; skip main header
-    lda #12
-    jsr .add_fastRAM_base
-
-.check_chunk
-    ; check what kind of chunk this is
-    ldz #2
-    lda [sound_file_target],z
-    pha
-    lda #4
-    jsr .add_fastRAM_base ; skip chunk identifier (4 bytes)
-    pla
-    cmp #$4e ; is it ssNd?
-    bne +
-    jmp .ssnd_chunk
-+
-    ; COMM, FORM, INST, MARK or SKIP chunk, skip this
-    cmp #$4d ; is it coMm?
-    bne .skip_chunk
-    ; COMM chunk
-    ; check channels (expect 1)
-    ldz #5
-    lda [sound_file_target],z
-    cmp #1
-    bne .bad_format
-    ; check bits/sample (expect 8 bit)
-    ldz #11
-    lda [sound_file_target],z
-    cmp #8
-    bne .bad_format
-    ; extract the sampling rate
-    ; exponent (= (byte 12 and 13) - $3fff, only positive allowed)
-    ldz #12
-    lda [sound_file_target],z
-    sec
-    sbc #$3f
-    sta .exponent + 1
-    inz 
-    lda [sound_file_target],z
-    sbc #$ff
-    sta .exponent
-    ; only use one byte of fraction (enough precision as int)
-    inz
-    lda [sound_file_target],z
-    sta .sample_rate_big_endian + 1
-    inz
-    lda [sound_file_target],z
-    sta .sample_rate_big_endian + 2
-    lda #0
-    sta .sample_rate_big_endian
-    ; modfiy with exponent
-    lda .exponent
-    sec
-    sbc #7 ; we're shifting one byte
-    tax
--   clc
-    rol .sample_rate_big_endian + 2
-    rol .sample_rate_big_endian + 1
-    rol .sample_rate_big_endian
-    dex
-    bne -
-!ifdef TRACE_SOUND {
-    lda .sample_rate_big_endian
-    jsr print_byte_as_hex
-    jsr colon
-    lda .sample_rate_big_endian + 1
-    jsr print_byte_as_hex 
-    jsr newline
++   ; parse sound effect data
+    lda #$00
+    sta sample_start_address + 2;
+!ifdef SOUND_WAV_ENABLED {
+    jsr .parse_wav
 }
-    jmp .skip_chunk
+!ifdef SOUND_AIFF_ENABLED {
+    jsr .parse_aiff
+}
+    ; error if sample_start_address not set
+    lda sample_start_address + 2;
+    bne +
+    lda #>.bad_audio_format_msg
+    ldx #<.bad_audio_format_msg
+    jmp printstring_raw
++   ; play the sample
+    jmp .play_sample;
 
-.bad_format
-	lda #>.bad_audio_format_msg
-	ldx #<.bad_audio_format_msg
-	jmp printstring_raw
-
-.skip_chunk
-    ldz #3
-    lda [sound_file_target],z
-    jsr .add_fastRAM_base ; skip chunk data (TODO check full size?)
-    lda #4
-    jsr .add_fastRAM_base ; skip chunk length (4 bytes)
-    jmp .check_chunk
-
-.ssnd_chunk
-    ; is the sample too big?
-    ldz #1
-    lda [sound_file_target],z
-    bne .bad_format
-
-    ; save chunk size for later
-    inz
--   lda [sound_file_target],z
-    pha
-    inz
-    cpz #4
-    bne -
-
-    lda #12
-    jsr .add_fastRAM_base ; skip until sample data (assuming no comment)
-    ; stop playback while loading new sample data
+.stop_sound_effect
     lda #$00
     sta $d720
-    ; load sample address into base and current address
-    lda sound_file_target 
-    sta $d721 ; base 
-    sta $d72a ; current
-    lda sound_file_target + 1
-    sta $d722
-    sta $d72b
-    lda sound_file_target + 2
-    sta $d723
-    sta $d72c
-    ; calculate end point by adding saved chunk size to sample start
-    clc
-    pla
-    adc $d721
-    sta $d727
-    pla
-    adc $d722
-    sta $d728
-
-    ; volume
-	lda sound_arg_volume
-    sta $d729
-    sta $d71c ; mirror channel for stereo
-
-    ; frequency (assuming CPU running at 40 MHz)
-    ; x = (f * 40)/100 = (f/10) << 2
-    lda .sample_rate_big_endian + 1 ; note big endian
-    sta dividend
-    lda .sample_rate_big_endian
-    sta dividend + 1
-    lda #10
-    sta divisor
-    lda #$00
-    sta divisor + 1
-    jsr divide16
-    clc
-    rol dividend
-    rol dividend + 1
-    rol dividend
-    rol dividend + 1
-    lda dividend
-    sta $d724
-    lda dividend + 1
-    sta $d725
-    lda #$00
-    sta $d726
-
-    ; Enable playback of channel 0
-    lda #$82
-    sta $d720
-
-    ; enable audio dma
-    lda #$80
-    sta $d711
-
+    sta $d740
+    sta .sound_is_playing
     rts
 
-.init_fastRAM_base
-    ; init sound file address pointer
-	lda #0
-	sta sound_file_target
-	sta sound_file_target + 1
-	sta sound_file_target + 3
-	lda #$04
-	sta sound_file_target + 2
+.calculate_sample_clock
+   ; frequency (assuming CPU running at 40.5 MHz)
+    ;
+    ; max sample clock $ffffff is about 40 MHz sample rate
+    ; (stored in $d724-$d726)
+    ;
+    ; $ffffff / sample_clock = CPU / f  => sample_clock = ($ffffff * f)/ CPU
+    ; but $ffffff/CPU is constant about 1/2.414
+    ; sample_clock =  f / 2.414
+    ;
+    ; to avoid floating point, multiply by 1000
+    ; x = (f * 2414)/1000 
+    ;
+    ; this is still hard to do with integers, so simplify by
+    ; using 106/256 (~= 1/2.415) instead. This will be 1% faster.
+    ; x = f * (106/256) = (f * 106) >> 8
+	stx sound_tmp
+	sty sound_tmp + 1
+    jsr mega65io
+    lda #0
+    tax
+    tay
+    taz
+    lda #106
+    stq $d770
+    ldx sample_rate_hz + 1
+    lda sample_rate_hz
+    stq $d774
+    ldq $d778
+    stq .sample_clock_dummy ; Skip the lowbyte at $d778, to perform >> 8
+	ldx sound_tmp
+	ldy sound_tmp + 1
+    rts
+
+.play_sample
+    ; TODO: it should be possible to use channel 0 only and mirror
+    ; it using $d71c, but I can't get it to work
+    ; .play_sample_ch3 can be removed if this is solved
+	ldx #$0
+	ldy #$20
+    jsr .play_sample_ch_xy ; left
+    ; enable audio dma
+    lda #$80 ; AUDEN
+    sta $d711
+    sta .sound_is_playing ; tell the interrupt that we are running
+    rts
+
+.play_sample_ch_xy
+	; stop playback while loading new sample data
+	lda #$00
+	sta $d720,x
+	sta $d720,y
+	; store sample start address in base and current address
+	lda sample_start_address
+	sta $d721,x ; base 
+	sta $d721,y ; base 
+	sta $d72a,x ; current
+	sta $d72a,y ; current
+	lda sample_start_address + 1
+	sta $d722,x
+	sta $d722,y
+	sta $d72b,x
+	sta $d72b,y
+	lda sample_start_address + 2
+	sta $d723,x
+	sta $d723,y
+	sta $d72c,x
+	sta $d72c,y
+	; store sample stop address
+	lda sample_stop_address
+	sta $d727,x
+	sta $d727,y
+	lda sample_stop_address + 1
+	sta $d728,x
+	sta $d728,y
+	; volume
+	lda sound_arg_volume
+	sta $d729,x
+	sta $d729,y
+;    sta $d71c ; mirror the sound for stereo (TODO: doesn't work!)
+;    sta $d71e ; mirror the sound for stereo (TODO: doesn't work!)
+	; sample clock/rate
+	jsr .calculate_sample_clock
+	lda .sample_clock
+	sta $d724,x
+	sta $d724,y
+	lda .sample_clock + 1
+	sta $d725,x
+	sta $d725,y
+	lda .sample_clock + 2
+	sta $d726,x
+	sta $d726,y
+	; Enable playback of channel 0
+	lda #$82 ; CH0EN + CH0SBITS (10 = 8 bits sample)
+	bit sample_is_signed
+	bpl +
+	ora #$20 ; CH0SGN
++   sta $d720,x
+	sta $d720,y
 	rts
 
-.add_fastRAM_base
-    ; add (a) to sound file address pointer
-    clc
-    adc sound_file_target
-    sta sound_file_target
-    lda sound_file_target + 1
-    adc #$00
-    sta sound_file_target + 1
-    rts
+;.play_sample_ch0
+;    ; stop playback while loading new sample data
+;    lda #$00
+;    sta $d720
+;    ; store sample start address in base and current address
+;    lda sample_start_address
+;    sta $d721 ; base 
+;    sta $d72a ; current
+;    lda sample_start_address + 1
+;    sta $d722
+;    sta $d72b
+;    lda sample_start_address + 2
+;    sta $d723
+;    sta $d72c
+;    ; store sample stop address
+;    lda sample_stop_address
+;    sta $d727
+;    lda sample_stop_address + 1
+;    sta $d728
+;    ; volume
+;    lda sound_arg_volume
+;    sta $d729
+;    sta $d71c ; mirror the sound for stereo (TODO: doesn't work!)
+;    ; sample clock/rate
+;    jsr .calculate_sample_clock
+;    lda .sample_clock
+;    sta $d724
+;    lda .sample_clock + 1
+;    sta $d725
+;    lda .sample_clock + 2
+;    sta $d726
+;    ; Enable playback of channel 0
+;    lda #$82 ; CH0EN + CH0SBITS (10 = 8 bits sample)
+;    ldx sample_is_signed
+;    beq +
+;    ora #$20 ; CH0SGN
+;+   sta $d720
+;    rts
+
+!ifdef SOUND_WAV_ENABLED {
+!source "sound-wav.asm"
+}
+!ifdef SOUND_AIFF_ENABLED {
+!source "sound-aiff.asm"
+}
 
 .copy_effect_to_fastram
     ; copy effect .current_effect to fastRAM so it can be played
@@ -540,7 +583,6 @@ sound_effect
 z_ins_sound_effect = z_ins_nop ; not z_not_implemented, as this might be reused for debugging purposes
 } else {
 z_ins_sound_effect
-	lda #$08
 	ldy z_operand_count
 	beq .play_beep ; beep if no args (Z-machine standards, p101)
 	ldx z_operand_value_low_arr
@@ -550,17 +592,58 @@ z_ins_sound_effect
     ; parse rest of the args
 	lda z_operand_value_low_arr + 1 ; effect
 	sta sound_arg_effect
+
+;	ldy z_operand_count
+	cpy #3
+	bcs +
+	; No volume given, set to max...
+	lda #255
+	sta z_operand_value_low_arr + 2
+!ifdef Z5PLUS {
+	; ... and set repeats to 1 for z5
+	lda #1
+	sta z_operand_value_high_arr + 2
+}
++		
+!ifdef Z5PLUS {
+	cpy #4
+	bcs +
+	; No routine given, set to 0
+	lda #0
+	sta z_operand_value_low_arr + 3
+	sta z_operand_value_high_arr + 3
++
+}
+
 	lda z_operand_value_low_arr + 2 ; volume
-	sta sound_arg_volume
+	cmp #$ff
+	beq +
+	cmp #9 ; Values 9-254 are rounded down to 8
+	bcc ++
+	lda #8
+	sta z_operand_value_low_arr + 2 
+++	asl
+	asl
+	asl
+	asl
+	asl
+	sec
+	sbc z_operand_value_low_arr + 2
++	sta sound_arg_volume
+!ifdef Z5PLUS {
 	lda z_operand_value_high_arr + 2 ; repeats
-	sta sound_arg_repeats
+	bne +
+	lda #1
++	sta sound_arg_repeats
 	lda z_operand_value_low_arr + 3 ; routine
 	sta sound_arg_routine
 	lda z_operand_value_high_arr + 3 ; routine
 	sta sound_arg_routine + 1
-    jmp sound_effect
 }
+    jmp sound_effect
+} ; ifdef SOUND
 .play_beep
+	lda #$08 ; Frequency for low-pitched beep
     dex
 	beq .sound_high_pitched_beep
 	dex
@@ -573,12 +656,20 @@ z_ins_sound_effect
 	sta $d401
 	lda #$21
 	sta $d404
+!ifdef TARGET_MEGA65 {
+	ldz #40
+.outer_loop
+}
 	ldy #40
 --	ldx #0
 -	dex
 	bne -
 	dey
 	bne --
+!ifdef TARGET_MEGA65 {
+	dez
+	bne .outer_loop
+}
 	lda #$20
 	sta $d404
 	rts
