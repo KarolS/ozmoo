@@ -19,7 +19,7 @@ readblocks_currentblock	!byte 0,0 ; 257 = ff 1
 readblocks_currentblock_adjusted	!byte 0,0 ; 257 = ff 1
 readblocks_mempos		!byte 0,0 ; $2000 = 00 20
 disk_info
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	!fill 71
 }
 !ifdef Z4 {
@@ -289,64 +289,87 @@ read_track_sector
 	
 	clc
 	adc .sector
-	sta .dma_source_address + 1
+	sta dma_source_address + 1
 	lda readblocks_mempos
-	sta .dma_dest_address
+	sta dma_dest_address
 	lda readblocks_mempos + 1
-	sta .dma_dest_address + 1
+	sta dma_dest_address + 1
 	ldy #1
-	sty .dma_count + 1 ; Transfer 1 page
-	sty .dma_source_bank_and_flags
+	sty dma_count + 1 ; Transfer 1 page
+	sty dma_source_bank_and_flags
 	dey ; Set y to 0
-	sty .dma_dest_bank_and_flags
-	sty .dma_source_address
-	sty .dma_dest_address_top
-	sty .dma_source_address_top
-	sty .dma_count
+	sty dma_dest_bank_and_flags
+	sty dma_source_address
+	sty dma_dest_address_top
+	sty dma_source_address_top
+	sty dma_count
+
+m65_run_dma
 	
 	jsr mega65io
-	sei
-	sty $d702 ; DMA list is in bank 0
-	lda #>.dma_list
+	lda #0
+	sta $d702 ; DMA list is in bank 0
+	lda #>dma_list
 	sta $d701
-	lda #<.dma_list
+	lda #<dma_list
 	sta $d705 
 	cli
-		
-	rts
+	clc
+	rts	
 
 m65_start_disk_access
 	jsr mega65io
+	inc m65_disk_enabled
+	lda m65_disk_enabled
+	cmp #1
+	bne .return
+
+	lda $d689
+	ora #$10
+	sta $d689 ; Turn off autoseek
+	lda $d6a1
+	and #%11111101
+	sta $d6a1 ; Turn off TARGANY
 	lda #$60
-	sta $d080 ; Enable drive motor
+	sta $d080 ; Enable drive motor AND select side
 	lda #$20
 	sta $d081 ; Send SPINUP command
--	lda $d082
-	bmi - ; Wait for busy flag to clear
+m65_busy_wait
+	jsr m65_pause_1ms
+-	bit $d082
+	bmi -
 	rts
 
 m65_end_disk_access
+	dec m65_disk_enabled
+	bne .return
+
 	lda #$00
 	sta $d080 ; Disable drive motor
--	lda $d082
-	bmi - ; Wait for busy flag to clear - CAN SKIP THIS?
-	rts
+	jmp m65_busy_wait
 
 m65_get_current_trackno
 	lda m65_current_trackno
 	bpl .return
 
-m65_reset_trackno
-	jsr m65_start_disk_access
---	lda $d082
+; m65_reset_trackno
+	; lda #48
+	; sta SCREEN_ADDRESS + 3*80 ; Show status "0"
+-	jsr m65_busy_wait
+	lda $d082
 	and #$01
 	bne + ; Track 0 reached
+	; lda #49
+	; sta SCREEN_ADDRESS + 3*80 ; Show status "1"
 	lda #$10
 	sta $d081
--	lda $d082
-	bmi - ; Wait for busy flag to clear
-	bpl -- ; Always branch
-+	jsr m65_end_disk_access
+;	inc $d020
+;	inc SCREEN_ADDRESS
+;	jsr m65_pause_6ms
+	jmp - ; Always branch
++
+	; lda #50
+	; sta SCREEN_ADDRESS + 3*80 ; Show status "2"
 	lda #0
 	sta m65_current_trackno
 .return
@@ -406,66 +429,118 @@ m65_read_track
 	; x = physical track# (0-79)
 	; a = side (0-1)
 	; y = memory position (0-11)
+	pha
+
 	asl
 	asl
 	asl
-	sta m65_disk_tmp
+	eor #$68 ; After this we have either $68 (side 0) or $60 (side 1)
+	pha
+
 	jsr m65_start_disk_access
+;	lda #51
+;	sta SCREEN_ADDRESS + 3*80 ; Show status "3"
+	pla
+	sta $d080 ; Enable drive motor AND select side
+	jsr m65_busy_wait
+
+	pla
+	sta $d086 ; Set disk side register
+;	sta SCREEN_ADDRESS + 5*80 + 2 ; About to read this side
 
 	lda m65_track_buffer_startpage,y
 	sta m65_track_mempos ; The page in bank 1 where we store this track
 	
-	lda #$60
-	ora m65_disk_tmp
-	sta $d080 ; Set disk side	
+	; lda #52
+	; sta SCREEN_ADDRESS + 3*80 ; Show status "4"
 	jsr m65_get_current_trackno
+	; lda #54
+	; sta SCREEN_ADDRESS + 3*80 ; Show status "6"
 
 .check_trackno_again
 	cpx m65_current_trackno
 	beq .found_track
-	bcs .step_in
+	bcs .step_out
 	dec m65_current_trackno
 	lda #$10
 	bne .send_track_change
-.step_in
+.step_out ; Higher track#
 	inc m65_current_trackno
 	lda #$18
 .send_track_change
+	jsr m65_busy_wait
 	sta $d081
-.wait_track_change
-	lda $d082
-	bmi .wait_track_change ; Wait for busy flag to clear
-	bpl .check_trackno_again ; Always branch
+	; lda #55
+	; sta SCREEN_ADDRESS + 3*80 ; Show status "7"
+	jsr m65_pause_1ms
+	jmp .check_trackno_again
 .found_track
 	stx $d084
-	lda m65_disk_tmp
-	lsr
-	lsr
-	lsr
-	sta $d086
+;	stx SCREEN_ADDRESS + 5*80 + 0 ; About to read this track
+
+	; Prepare DMA transfers
+	ldy #$0d
+	sty dma_source_bank_and_flags
+	ldy #$6c
+	sty dma_source_address + 1
+	ldy #2
+	sty dma_count + 1 ; Transfer 2 pages
+	dey ; Set y to 1
+	sty dma_dest_bank_and_flags
+	dey ; Set y to 0
+	sty dma_source_address
+	sty dma_dest_address
+	sty dma_dest_address_top
+	sty $d702 ; DMA list is in bank 0
+	dey ; Set y to $ff
+	sty dma_source_address_top
+
+	jsr m65_pause_30ms ; Pause to let head stabilize before trying to read sectors
 
 	; Iterate over sectors, in fastest order, reading sector and copying it to memory
 	ldx #9
 .read_next_sector
+	; lda #0
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "@", meaning haven't read yet.
 	lda m65_sector_order,x
 	tay
 	iny
 	sty $d085
+;	sty SCREEN_ADDRESS + 5*80 + 1 ; About to read this sector
+	jsr m65_busy_wait
+	; lda #1
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "A"
+
 	lda #$40
-	sta $d081
--	lda $d083
-	bpl - ; Wait for RDREQ = 1
+	sta $d081 ; Issue READ command
+	jsr m65_pause_1ms
+;-	bit $d082
+;	bpl - ; Wait until BUSY goes high (BREAKS IN XEMU, SO ADDED PAUSE INSTEAD)
+	; lda #2
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "B"
+-	lda $d082
+	and #$54
+	beq -
+	jsr m65_busy_wait
+	; lda #2
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "C"
 -	lda $d082
 	and #$10
 	bne .dnf
-	lda $d082
-	bmi - ; Wait for busy flag to clear
+;	lda $d083
+;	bpl - ; Wait for RDREQ = 1
+	; lda #3
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "D"
 
-.expected_flags = $40 ; This should be $60 according to the MEGA65 manual, but $40 is what currently works
--	lda $d082
-	and #.expected_flags
-	cmp #.expected_flags
-	bne - ; Wait for DRQ = 1 and EQ = 1
+; .expected_flags = $40 ; This should be $60 according to the MEGA65 manual, but $40 is what currently works
+; -	lda $d082
+	; and #.expected_flags
+	; cmp #.expected_flags
+	; bne - ; Wait for DRQ = 1 and EQ = 1
+
+	; lda #5
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "E"
+
 	
 	; Copy physical sector (512 bytes) from FDC buffer to bank 1
 
@@ -476,30 +551,19 @@ m65_read_track
 	lda m65_sector_order,x ; Physical sector# - 1 (0 .. 9)
 	asl ; 2 pages per sector
 	adc m65_track_mempos ; Carry is already clear
-	sta .dma_dest_address + 1
+	sta dma_dest_address + 1
 
-	ldy #$0d
-	sty .dma_source_bank_and_flags
-	ldy #$6c
-	sty .dma_source_address + 1
-	ldy #2
-	sty .dma_count + 1 ; Transfer 2 pages
-	dey ; Set y to 1
-	sty .dma_dest_bank_and_flags
-	dey ; Set y to 0
-	sty .dma_source_address
-	sty .dma_dest_address
-	sty .dma_dest_address_top
-	sty $d702 ; DMA list is in bank 0
-	dey ; Set y to $ff
-	sty .dma_source_address_top
-	
-	sei
-	lda #>.dma_list
-	sta $d701
-	lda #<.dma_list
-	sta $d705 
-	cli
+	; lda #6
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "F"
+
+	jsr m65_run_dma
+
+	; lda #7
+	; sta SCREEN_ADDRESS + 5*80 + 4 ; Show status "G"
+
+	; lda #0
+	; sta 198
+;	jsr kernal_readchar
 	
 	dex
 	bpl .read_next_sector
@@ -510,34 +574,68 @@ m65_read_track
 	lda #ERROR_FLOPPY_READ_ERROR
 	jsr fatalerror
 
+m65_pause_30ms
+	lda #3
+	sta m65_pause
+--	lda ti_variable + 2
+-	cmp ti_variable + 2
+	beq -
+	dec m65_pause
+	bne --
+	rts
+
+; m65_pause_6ms
+	; jsr m65_pause_1ms
+	; jsr m65_pause_1ms
+	; jsr m65_pause_1ms
+	; jsr m65_pause_1ms
+	; jsr m65_pause_1ms
+
+m65_pause_1ms
+	pha
+	tya
+	pha
+	ldy #0
+--	lda #23
+-	sec
+	sbc #1
+	bne -
+	dey
+	bne --
+	pla
+	tay
+	pla
+	rts
+
+
+m65_disk_enabled			!byte 0 ; Increases with every call to m65_start_disk_access, 
+m65_pause					!byte 0
 m65_track_buffer_trackno 	!fill 12, $ff
 m65_track_buffer_flag	 	!fill 12, 0
 m65_track_buffer_startpage	!byte 0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220
 m65_track_buffer_next_pos	!byte 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0
 m65_track_buffer_next		!byte 0
 m65_track_mempos			!byte 0
-;m65_track_index_last_read	!byte $ff
 m65_current_trackno			!byte $ff
 m65_disk_tmp				!byte 0
 m65_mempos_tmp				!byte 0
 m65_sector_order			!byte 9,7,5,3,1,8,6,4,2,0 ; Read in reverse order. Uses our internal numbering 0-9, add 1 to get physical sector.
 	
-.dma_list
+dma_list
 	!byte $0b ; Use 12-byte F011B DMA list format
-	!byte $06 ; Disable use of transparent value
 	!byte $80 ; Set source address bit 20-27
-.dma_source_address_top		!byte 0
+dma_source_address_top		!byte 0
 	!byte $81 ; Set destination address bit 20-27
-.dma_dest_address_top		!byte 0
+dma_dest_address_top		!byte 0
 	!byte $00 ; End of options
-.dma_command_lsb			!byte 0		; 0 = Copy
-.dma_count					!word $100	; Always copy one page
-.dma_source_address			!word 0
-.dma_source_bank_and_flags	!byte 0
-.dma_dest_address			!word 0
-.dma_dest_bank_and_flags	!byte 0
-.dma_command_msb			!byte 0		; 0 for linear addressing for both src and dest
-.dma_modulo					!word 0		; Ignored, since we're not using the MODULO flag
+dma_command_lsb			!byte 0		; 0 = Copy
+dma_count					!word $100	; Always copy one page
+dma_source_address			!word 0
+dma_source_bank_and_flags	!byte 0
+dma_dest_address			!word 0
+dma_dest_bank_and_flags	!byte 0
+dma_command_msb			!byte 0		; 0 for linear addressing for both src and dest
+dma_modulo					!word 0		; Ignored, since we're not using the MODULO flag
 
 } else {
 	; Not MEGA65
@@ -920,7 +1018,7 @@ z_ins_restart
 }
 
 z_ins_restore
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	jsr restore_game
 	beq +
 	ldx #0
@@ -945,7 +1043,7 @@ z_ins_restore
 }
 
 z_ins_save
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	jsr save_game
 	beq +
 	jmp make_branch_true

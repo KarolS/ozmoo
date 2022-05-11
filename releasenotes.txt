@@ -234,7 +234,7 @@ Release 7: 4 May 2021
   
   
 ================================================
-Release 8: 
+Release 8: 3 Oct 2021
 
 - Fixed indexing bug in add_line_to_history (issue 36)
 - Changed history to allow cursor up/down even if there is pending user input
@@ -249,4 +249,14 @@ Release 8:
   reading raw disk blocks, instead of using DOS commands, for speed.
 - Added a 60 KB cache in chipmem for disk tracks, used when reading raw disk 
   blocks on MEGA65.
-  
+- Minor optimization in reading and writing global variables in non-SLOW mode
+  on C64 and MEGA65.
+- Fixed bug which copied 256 bytes instead of 0 bytes from config info to
+  vmap_z_h (highbytes of vmem map) when game had no preloaded vmem blocks.
+- Updated outdated debug code for TRACE_VM (Issue 39)
+
+================================================
+Release 9: 28 Nov 2021
+
+- Support for z1, z2 and z7 story files.
+ 

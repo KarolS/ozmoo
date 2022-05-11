@@ -94,20 +94,36 @@
 	TERPNO = 8
 }
 
+!ifdef Z1 {
+	ZMACHINEVERSION = 1
+}
+!ifdef Z2 {
+	ZMACHINEVERSION = 2
+}
 !ifdef Z3 {
 	ZMACHINEVERSION = 3
+	Z3PLUS = 1
 }
 !ifdef Z4 {
 	ZMACHINEVERSION = 4
+	Z3PLUS = 1
 	Z4PLUS = 1
 }
 !ifdef Z5 {
 	ZMACHINEVERSION = 5
+	Z3PLUS = 1
+	Z4PLUS = 1
+	Z5PLUS = 1
+}
+!ifdef Z7 {
+	ZMACHINEVERSION = 7
+	Z3PLUS = 1
 	Z4PLUS = 1
 	Z5PLUS = 1
 }
 !ifdef Z8 {
 	ZMACHINEVERSION = 8
+	Z3PLUS = 1
 	Z4PLUS = 1
 	Z5PLUS = 1
 }
@@ -302,7 +318,7 @@ z_jump_high_arr
 }
 	!byte >z_ins_quit
 	!byte >z_ins_new_line
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	!byte >z_ins_show_status
 } else {
 	!byte >z_ins_nop ; should be nop according to show_status/spec 1.0
@@ -493,7 +509,7 @@ z_jump_low_arr
 }
 	!byte <z_ins_quit
 	!byte <z_ins_new_line
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	!byte <z_ins_show_status
 } else {
 	!byte <z_ins_nop ; should be nop according to show_status/spec 1.0
@@ -888,6 +904,30 @@ game_id		!byte 0,0,0,0
 	}
 }
 
+!ifdef Z7 {
+calc_z7_offsets
+	ldy #header_string_offset
+	jsr read_header_word
+	sta string_offset + 1
+	stx string_offset + 2
+	ldy #header_routine_offset
+	jsr read_header_word
+	stx routine_offset + 2
+
+	ldx #3
+-	asl string_offset + 2
+	rol string_offset + 1
+	rol string_offset
+	asl routine_offset + 2
+	rol
+	rol routine_offset
+	dex
+	bne -
+	sta routine_offset + 1
+	rts
+}
+
+
 !ifdef TARGET_C128 {
 
 !ifdef Z4PLUS {
@@ -1115,7 +1155,7 @@ stack_start
 deletable_screen_init_1
 	; start text output from bottom of the screen
 
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	!ifdef TARGET_C128 {
 		lda COLS_40_80
 		beq .width40
@@ -1136,7 +1176,7 @@ deletable_screen_init_1
 	ldy #0
 	sty current_window
 	sty window_start_row + 3
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	iny
 }
 	sty window_start_row + 2
@@ -1179,9 +1219,14 @@ z_init
 	iny
 	bne -
 }
+
+	; Calculate Z7 string offset and routine offset
+!ifdef Z7 {
+	jsr calc_z7_offsets
+}
 	
 	; Modify header to tell game about terp capabilities
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	ldy #header_flags_1
 	jsr read_header_word
 	and #(255 - 16 - 64) ; Statusline IS available, variable-pitch font is not default
@@ -1210,7 +1255,7 @@ z_init
 	lda #TERPNO ; Interpreter number (8 = C64)
 	ldy #header_interpreter_number 
 	jsr write_header_byte
-	lda #71 ; "G" = release 7
+	lda #(64 + 9) ; "I" = release 9
 	ldy #header_interpreter_version  ; Interpreter version. Usually ASCII code for a capital letter
 	jsr write_header_byte
 	lda #25
@@ -1477,6 +1522,8 @@ deletable_init
 	ldy boot_device
 	jsr read_track_sector
 	
+	
+
 ; Copy game id
 	ldx #3
 -	lda config_load_address,x
@@ -1774,6 +1821,10 @@ copy_data_from_disk_at_zp_temp_to_reu
 	
 	jsr print_reu_progress_bar
 
+!ifdef TARGET_MEGA65 {
+	jsr m65_start_disk_access
+}
+
 .initial_copy_loop
 	lda z_temp + 6
 	cmp z_temp + 4
@@ -1812,6 +1863,10 @@ copy_data_from_disk_at_zp_temp_to_reu
 
 .done_copying
 
+!ifdef TARGET_MEGA65 {
+	jsr m65_end_disk_access
+}
+
 	lda z_temp + 4
 	sta reu_last_disk_end_block
 	lda z_temp + 5
@@ -1836,6 +1891,7 @@ reu_start
 }
 ; REU detected, check size
 	jsr check_reu_size
+;	lda #0 ; SKIP REU FOR DEBUGGING PURPOSES
 	sta reu_banks
 	cmp #8
 	bcc .no_reu_present ; If REU size < 512 KB, don't use it.
@@ -1887,7 +1943,7 @@ reu_start
 ; reu_last_disk_end_block = string_array ; 2 bytes
 
 reu_progress_base
-!ifdef Z3 {
+!ifndef Z4PLUS {
 	!byte 16 ; blocks read to REU per tick of progress bar
 } else {
 !ifdef Z8 {
@@ -1932,7 +1988,6 @@ print_reu_progress_bar
 	dex
 	bne -
 +
-
 	rts
 } ; zone insert_disks_at_boot
 
@@ -1951,7 +2006,8 @@ prepare_static_high_memory
 -	sta vmap_next_quick_index,x ; Sets next quick index AND all entries in quick index to 0
 	dex
 	bpl -
-	
+
+; Copy vmem info from config blocks to vmap	
 	lda #6
 	clc
 	adc config_load_address + 4
@@ -1959,19 +2015,24 @@ prepare_static_high_memory
 	lda #>config_load_address
 ;	adc #0 ; Not needed, as disk info is always <= 249 bytes
 	sta zp_temp + 1
+!ifdef NOSECTORPRELOAD {
+	; With no sector preload, we only fill vmem map with the blocks that are in boot file
+	ldy #1
+	lda (zp_temp),y
+} else {
 	ldy #0
 !ifdef ILLEGAL {
 	lax (zp_temp),y ; # of blocks in the list
 } else {
 	lda (zp_temp),y ; # of blocks in the list
+	iny
+}
 	tax
 }
 	cpx vmap_max_entries
 	bcc +
-	beq +
 	ldx vmap_max_entries
 +	stx vmap_used_entries  ; Number of bytes to copy
-	iny
 	lda (zp_temp),y
 	sta vmap_blocks_preloaded ; # of blocks already loaded
 
@@ -1981,8 +2042,11 @@ prepare_static_high_memory
 	bpl .ignore_blocks
 }
 	sta vmap_used_entries
+	tax
 .ignore_blocks
 
+	cpx #0
+	beq .no_entries
 ; Copy to vmap_z_h
 -	iny
 	lda (zp_temp),y
@@ -2000,7 +2064,6 @@ prepare_static_high_memory
 	inc zp_temp + 1
 +	sta zp_temp
 	ldy vmap_used_entries
-	beq .no_entries
 	dey
 -	lda (zp_temp),y
 	sta vmap_z_l,y
